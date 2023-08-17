@@ -1,0 +1,502 @@
+---
+title: "FMPH 222 Final Project"
+author: "Daniel Zoleikhaeian"
+date: "2023-01-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd('C:\\Users\\danie\\Downloads\\FMPH 222\\Final_proj')
+library (readxl)
+library(binr)
+library(car)
+df <- read_excel('alz_dat.xlsx')
+
+# removing people who died
+df <- df[!(df$Statusgp == 3), ]
+
+# re-encoding certain variables
+df$Statusgp[df$Statusgp == 1] <- 0
+df$Statusgp[df$Statusgp == 2] <- 1
+df$Gendergp[df$Gendergp == 1] <- 0
+df$Gendergp[df$Gendergp == 2] <- 1
+
+
+# Turning certain variables into factors
+df$Gendergp <- factor(df$Gendergp)
+df$NGOgroup <- factor(df$NGOgroup)
+df$Randomization <- factor(df$Randomization)
+df$Randomization <- relevel(df$Randomization, ref = 'Soc')
+
+
+# re-encoding the randomization variable to 1 for phy and 0 for else
+df$isPhy <- as.integer(df$Randomization == 'Phy')
+
+# View(head(df))
+levels(factor(df$NGOgroup))
+
+```
+
+## Chi Square on Expected Dropouts
+```{r expected dropouts}
+library(dplyr)
+library(plyr)
+
+dropout_rate_overall <- sum(df$Statusgp == 2) / nrow(df)
+
+by_group_dropout <- df %>% 
+  dplyr::group_by(Randomization,Statusgp) %>%  
+  dplyr::summarise(total_count=n(), .groups = 'drop')
+
+dropouts <- by_group_dropout[by_group_dropout$Statusgp == 2, ]
+
+total_cts <- as.data.frame(plyr::count(df, 'Randomization'))
+
+expected_drops <- total_cts$freq * dropout_rate_overall
+
+chi_square_test_stat <- sum(((dropouts$total_count - expected_drops)^2) / expected_drops)
+
+pchisq(chi_square_test_stat, df = 3, lower.tail = F)
+
+```
+
+## Initial Model 
+```{r naive logisitc regression model}
+
+
+#View(df$Gendergp)
+mod1 <- glm(formula = Statusgp ~ Age + Educationyears + Gendergp + b_cdr_sumofboxes + Randomization, family = binomial, data = df )
+summary(mod1)
+
+# new model with re-encoded randomization
+mod2 <- glm(formula = Statusgp ~ Age + Educationyears + Gendergp + b_cdr_sumofboxes + isPhy, family = binomial, data = df )
+summary(mod2)
+
+```
+
+## Aggregate initial model 
+```{r aggregate model}
+w <- aggregate(Statusgp ~ Age + Educationyears + Gendergp + b_cdr_sumofboxes + Randomization, data = df, FUN = sum)
+n <- aggregate(Statusgp ~ Age + Educationyears + Gendergp + b_cdr_sumofboxes + Randomization, data = df, FUN = length)
+
+w.n <- data.frame(Age = w$Age,
+                  Educationyears = w$Educationyears,
+                  Gendergp = w$Gendergp,
+                  b_cdr_sumofboxes = w$b_cdr_sumofboxes,
+                  Randomization = w$Randomization,
+                  Statusgp = w$Statusgp,
+                  subj = n$Statusgp)
+
+# View(w.n)
+
+mod.ag <- glm(formula = Statusgp/subj ~ Age + Educationyears + Gendergp + b_cdr_sumofboxes + Randomization, family = binomial, data = w.n, weights = subj)
+summary(mod.ag)
+
+# Perhaps do backwards selection on the full model
+# So far, only b_cdr_sob and gender are important
+```
+
+## Backwards selection on full model (initial)
+```{r full model}
+
+library(logistf)
+f_mod <- logistf(formula = Statusgp ~ factor(NGOgroup) + Randomization + Age + Educationyears + Gendergp + b_cdr_sumofboxes, data = df)
+summary(f_mod)
+
+mod_b <- backward(f_mod, slstay= 0.2)
+summary(mod_b)
+
+## backwards selection 2
+rel_vars <- c('NGOgroup', 'Randomization', 'Statusgp', 'Age', 'Gendergp', 'Educationyears', 'b_Adas_DelayedRecall', 'b_Adas_Total', 'b_CMMSE', 'b_CVFT_Total', 'b_Cornell_Total', 'b_CIRS_Total', 'b_MIC_Total','b_CNPI_Total','b_cdr_sumofboxes')
+
+df_red2 <- df[, c(rel_vars)]
+
+df_red2 <- df_red2[complete.cases(df_red2), ]
+
+f_mod2 <- logistf(formula = Statusgp ~ NGOgroup + Randomization + Age + Gendergp + Educationyears + 
+b_Adas_DelayedRecall + b_Adas_Total + b_CMMSE + b_CVFT_Total + b_cdr_sumofboxes + 
+b_Cornell_Total + b_CIRS_Total + b_CNPI_Total + b_MIC_Total, data = df_red2)
+
+summary(f_mod2)
+
+mod_b2 <- logistf::backward(f_mod2, slstay= 0.2)
+summary(mod_b2)
+
+
+mod2 <- glm(formula = Statusgp ~ factor(NGOgroup) + Gendergp + b_cdr_sumofboxes, family = binomial, data = df)
+
+summary(mod2)
+df$Randomization  <- factor(df$Randomization)
+
+mod3 <- glm(formula = Statusgp ~ Randomization, family = binomial, data = df)
+summary(mod3)
+```
+
+## Model assessment for Backwards Selection Model
+```{r}
+mod_b_sel <- glm(formula = Statusgp ~ NGOgroup + Randomization + Gendergp + b_Adas_DelayedRecall + b_Cornell_Total, family = binomial, data = df_red2)
+summary(mod_b_sel)
+
+## Suggestion that CP is most important
+
+df_red2$RandCP <- as.integer(df_red2$Randomization == 'Cog Phy')
+
+mod_b_sel2 <- glm(formula = Statusgp ~ NGOgroup + factor(RandCP) + Gendergp + b_Adas_DelayedRecall + b_Cornell_Total, family = binomial, data = df_red2)
+summary(mod_b_sel2)
+
+## Model Assessment
+
+### New aggregations
+bins.quantiles(df_red2$b_Adas_DelayedRecall, target.bins = 3, max.breaks = 12)
+
+# adas bins: [0,2] [3,5] and [6,9]
+df_red2 <- df_red2 %>% mutate(adas_bin = cut(b_Adas_DelayedRecall, breaks=c(-1, 2, 5, 9)))
+# Cornell bins: use 6 as depression cutoff (mentioned in Lam et al paper pg. 5)
+df_red2 <- df_red2 %>% mutate(cornell_bin = cut(b_Cornell_Total, breaks=c(-1, 5, 24)))
+
+ag.df <- aggregate(Statusgp ~ NGOgroup + Gendergp + RandCP + adas_bin + cornell_bin, data = df_red2, FUN = sum)
+n <- aggregate(Statusgp ~ NGOgroup + Gendergp + RandCP + adas_bin + cornell_bin, data = df_red2, FUN = length)
+probs <- ag.df$Statusgp / n$Statusgp
+ag.df_aug <- cbind(ag.df, probs)
+
+ag.mod <- glm(formula = probs ~ NGOgroup + Gendergp + RandCP + adas_bin + cornell_bin, family = binomial, data = ag.df_aug, weights = n$Statusgp)
+summary(ag.mod)
+plot(ag.mod)
+
+## Influence Plot for aggregate model 
+car::influencePlot(ag.mod)
+
+## Seeing the influential points
+misses <- ag.df_aug[c(2,13,19,20), ]
+misses$est_prob <- ag.mod$fitted.values[c(2,13,19,20)]
+View(misses)
+
+## Sensitivity analysis: dropping one influential point at a time
+for (i in c(2,13,19,20)) {
+  without_misses <- ag.df_aug[-i, ]
+  ag.mod.test <- glm(formula = probs ~ NGOgroup + Gendergp + RandCP + adas_bin + cornell_bin, family = binomial, data = without_misses, weights = n$Statusgp[-i])
+  print(summary(ag.mod.test))
+}
+
+## Dropping all influential points at once 
+without_misses1 <- ag.df_aug[-c(2,13,19,20), ]
+ag.mod2 <- glm(formula = probs ~ NGOgroup + Gendergp + RandCP + adas_bin + cornell_bin, family = binomial, data = without_misses, weights = n$Statusgp[-c(2,13,19,20)])
+
+summary(ag.mod2)
+
+
+### New Model based on aggregations
+mod_b_sel3 <- glm(formula = Statusgp ~ NGOgroup + factor(RandCP) + Gendergp + adas_bin + cornell_bin, family = binomial, data = df_red2)
+summary(mod_b_sel3)
+
+CIs <- exp(confint(mod_b_sel3))
+
+coeffs <- exp(mod_b_sel3$coefficients)
+coeffs
+
+df_res <- data.frame(Estimates = coeffs)
+df_res <- cbind(df_res, CIs)
+View(df_res)
+
+```
+
+
+## Truncated dataframe for use in bestglm
+
+```{r}
+library(bestglm)
+
+reduced_df <- df[, colnames(df) %in% rel_vars]
+reduced_df <- reduced_df[complete.cases(reduced_df), ]
+
+reduced_df$y <- reduced_df$Statusgp
+reduced_df$Statusgp <- NULL
+
+## All Subsets Regression
+res.bestglm <-
+    bestglm(Xy = as.data.frame(reduced_df),
+            family = binomial(link = 'logit'),
+            IC = "AIC",                 
+            method = "exhaustive")
+
+res.bestglm$BestModel
+
+res.bestglm
+
+best_mod2 <- glm(formula = y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + b_Cornell_Total, family = binomial, data = reduced_df)
+
+summary(best_mod2)
+
+```
+
+## Diagnostics for predictive model (model fit)
+```{r}
+# Aggregated Data
+
+ag.df <- aggregate(y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + b_Cornell_Total, data= reduced_df, FUN = sum)
+
+n <- aggregate(y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + b_Cornell_Total, data= reduced_df, FUN = length)
+
+View(ag.df)
+
+probs <- ag.df$y / n$y
+
+sum(probs == 0)
+
+ag.df_aug <- cbind(ag.df, probs)
+View(ag.df_aug)
+
+
+ag.mod <- glm(formula = probs ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + b_Cornell_Total, family = binomial, data = ag.df_aug, weights = n$y)
+summary(ag.mod)
+
+plot(ag.mod)
+
+pchisq(111.96, df= 127, lower.tail = F)
+```
+
+```{r}
+
+summary(best_mod2)
+
+# compare to saturated model
+pchisq(355.56, df = 536, lower.tail = F)
+
+# no evidence of better complexity being good 
+```
+
+## Assessing predictive accuracy: Tuning cutoff and Checking mislabels
+
+```{r}
+p_seq <- seq(0.01, 0.99, 0.01)
+
+acc <- rep(0, length(p_seq))
+actuals <- reduced_df$y
+
+for (i in 1:length(p_seq)) {
+  preds <- best_mod2$fitted.values > p_seq[i]
+  comps <- preds == actuals
+  acc[i] <- sum(comps) / length(comps)
+}
+
+accuracy <- max(acc)
+best_p <- p_seq[which.max(acc)]
+
+preds <- best_mod2$fitted.values > best_p
+
+library(caret)
+
+preds <- factor(as.numeric(preds))
+actuals <- factor(actuals)
+
+confusionMatrix(data = actuals, reference = preds, dnn = c('Actual', 'Prediction'))
+
+library(boot)
+
+f_mod_pred <- glm(formula = y ~ NGOgroup + Randomization + Age + Gendergp + Educationyears + 
+b_Adas_DelayedRecall + b_Adas_Total + b_CMMSE + b_CVFT_Total + b_cdr_sumofboxes + 
+b_Cornell_Total + b_CIRS_Total + b_CNPI_Total + b_MIC_Total, family = binomial, data = reduced_df)
+
+View(head(df_red2))
+
+cv.glm(data = reduced_df, glmfit = best_mod2, K = 10)$delta
+cv.glm(data = reduced_df, glmfit = f_mod_pred, K = 10)$delta
+
+```
+
+## Miscellaenous
+
+### New aggregations
+
+```{r}
+summary(reduced_df$b_Adas_DelayedRecall)
+summary(reduced_df$b_Cornell_Total)
+
+# 6 or higher is determined to be clinically relevant depression
+reduced_df$Deprs <- reduced_df$b_Cornell_Total >= 6
+
+ag_mod2 <- glm(formula = y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + Deprs, family = binomial, data = reduced_df)
+
+cutoffs_adas <- quantile(reduced_df$b_Adas_DelayedRecall, c(1/4, 1/2, 3/4))
+cutoffs_adas
+
+reduced_df$adas_dr2 <- rep(0, nrow(reduced_df))
+reduced_df$adas_dr2[reduced_df$b_Adas_DelayedRecall <= cutoffs_adas[1]] <- 0
+reduced_df$adas_dr2[reduced_df$b_Adas_DelayedRecall > cutoffs_adas[1] & reduced_df$b_Adas_DelayedRecall <= cutoffs_adas[2]] <- 1
+
+reduced_df$adas_dr2[reduced_df$b_Adas_DelayedRecall > cutoffs_adas[2] & reduced_df$b_Adas_DelayedRecall <= cutoffs_adas[3]] <- 2
+
+reduced_df$adas_dr2[reduced_df$b_Adas_DelayedRecall > cutoffs_adas[3]] <- 3
+
+ag_mod3 <- glm(formula = y ~ NGOgroup + Gendergp + adas_dr2 + Deprs, family = binomial, data = reduced_df)
+
+summary(ag_mod3)
+
+
+```
+
+### Residual diagnostics for most aggregated model
+```{r}
+ag.df3 <- aggregate(y ~ NGOgroup + Gendergp + adas_dr2 + Deprs, data= reduced_df, FUN = sum)
+
+n3 <- aggregate(y ~ NGOgroup + Gendergp + adas_dr2 + Deprs, data= reduced_df, FUN = length)
+
+
+probs3 <- ag.df3$y / n3$y
+
+
+
+ag.df_aug3 <- cbind(ag.df3, probs3)
+
+
+ag.mod3 <- glm(formula = probs3 ~ NGOgroup + Gendergp + adas_dr2 + Deprs, family = binomial, data = ag.df_aug3, weights = n3$y)
+summary(ag.mod3)
+
+plot(ag.mod3)
+pchisq(25.682, df = 28, lower.tail = F)
+
+```
+
+### Check by specificity --> does not work
+### Just change the weights; weight the true positives higher than true negatives
+```{r}
+p_seq <- seq(0.01, 0.99, 0.01)
+
+acc <- rep(0, length(p_seq))
+sens <- rep(0, length(p_seq))
+spec <- rep(0, length(p_seq))
+ppv_Vec <- rep(0, length(p_seq))
+
+
+for (i in 1:length(p_seq)) {
+  preds <- ag_mod3$fitted.values >= p_seq[i]
+  actuals <- reduced_df$y
+  
+  comps <- preds == actuals
+                       
+  acc[i] <- sum(comps) / length(comps)
+  sens[i] <- sensitivity(factor(actuals), reference = factor(as.numeric(preds)))
+  spec[i] <- specificity(factor(actuals), reference = factor(as.numeric(preds)))
+  ppv_Vec[i] <- posPredValue(factor(actuals), reference = factor(as.numeric(preds)))
+}
+
+plot(p_seq, acc)
+max_accuracy <- max(acc)
+
+best_cutoff <- p_seq[which.max(acc)]
+
+
+preds <- ag_mod3$fitted.values >= best_cutoff
+
+# Confusion Matrix for max accuracy
+
+conf_mat <- matrix(c(sum(actuals == 0 & preds == 0), sum(actuals == 0 & preds == 1),
+                     sum(actuals == 1 & preds == 0), sum(actuals == 1 & preds == 1)), nrow = 2, ncol = 2, byrow = T)
+dimnames(conf_mat) <- list(Actual = c('Stay', 'Drop'),
+                           Prediction = c('Stay', 'Drop'))
+
+conf_mat
+
+# Alternate Solution using caret
+library(caret)
+
+preds <- factor(as.numeric(preds))
+actuals <- factor(actuals)
+
+confusionMatrix(data = actuals, reference = preds, dnn = c('Actual', 'Prediction'))
+
+max_sens <- max(sens)
+best_cutoff_sens <- p_seq[which.max(sens)]
+
+preds2 <- ag_mod3$fitted.values >= best_cutoff_sens
+conf_mat <- matrix(c(sum(actuals == 0 & preds2 == 0), sum(actuals == 0 & preds2 == 1),
+                     sum(actuals == 1 & preds2 == 0), sum(actuals == 1 & preds2 == 1)), nrow = 2, ncol = 2, byrow = T)
+dimnames(conf_mat) <- list(Actual = c('Stay', 'Drop'),
+                           Prediction = c('Stay', 'Drop'))
+
+conf_mat
+
+confusionMatrix(data = actuals, reference = factor(as.numeric(preds2)), dnn = c('Actual', 'Prediction'))
+
+b_se_sp <- max(sens * spec)
+cutoff_se_sp <- p_seq[which.max(sens*spec)]
+preds3 <- ag_mod3$fitted.values >= cutoff_se_sp
+confusionMatrix(data = actuals, reference = factor(as.numeric(preds3)), dnn = c('Actual', 'Prediction'))
+
+b_spec <- max(spec)
+cutoff_spec <- p_seq[which.max(spec)]
+preds4 <- ag_mod3$fitted.values >= cutoff_spec
+confusionMatrix(data = actuals, reference = factor(as.numeric(preds4)), dnn = c('Actual', 'Prediction'))
+
+```
+
+
+### Different aggregated model
+```{r}
+best_mod2b <- glm(formula = y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + Deprs, family = binomial, data = reduced_df)
+
+summary(best_mod2b)
+
+ag.df2b <- aggregate(y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + Deprs, data= reduced_df, FUN = sum)
+
+n2b <- aggregate(y ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + Deprs, data= reduced_df, FUN = length)
+
+
+probs2b <- ag.df2b$y / n2b$y
+
+
+
+ag.df_aug2b <- cbind(ag.df2b, probs2b)
+
+
+ag.mod2b <- glm(formula = probs2b ~ NGOgroup + Gendergp + b_Adas_DelayedRecall + Deprs, family = binomial, data = ag.df_aug2b, weights = n2b$y)
+summary(ag.mod2b)
+
+plot(ag.mod2b)
+pchisq(56.187, df = 59, lower.tail = F)
+```
+
+### Checking accuracy -- the residual plots look good; just look at the outliers and see if anything changes
+
+### Also, use a different measure of accuracy. Weight the 1 == 1 stronger 
+### Maximize the specificity
+
+```{r}
+p_seq <- seq(0.01, 0.99, 0.01)
+
+acc <- rep(0, length(p_seq))
+
+length(ag_mod3$fitted.values)
+
+for (i in 1:length(p_seq)) {
+  preds <- ag_mod3$fitted.values > p_seq[i]
+  actuals <- reduced_df$y
+  
+  comps <- preds == actuals
+                       
+  acc[i] <- sum(comps) / length(comps)
+}
+
+max(acc)
+p_seq[which.max(acc)]
+
+sum(ag_mod3$fitted.values > p_seq[which.max(acc)])
+
+preds2 <- ag_mod3$fitted.values > p_seq[which.max(acc)]
+sum(preds2 == 0 & actuals == 0)
+sum(actuals == 0)
+
+
+
+length(preds2)
+length(actuals)
+
+
+
+cv.glm(data = reduced_df, glmfit = best_mod2b, K = 10)$delta
+
+```
+```
